@@ -1,0 +1,143 @@
+#Installing packages
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install(c("edgeR","limma"))
+
+
+#Loading the required libraries
+library(edgeR);packageVersion("edgeR")
+library(limma);packageVersion("limma")
+
+
+#Reading data
+rm(list = ls())
+counts <- read.table("D:/extra_credit_counts.txt",row.names = 1 ,header = T)
+
+
+#Printing the sample and gene information
+head(counts)
+
+
+#Testing relative standard deviation
+RSD.test <- function(dataframe){
+  RSD_tests = dataframe[,1]
+  for (row_index in 1:nrow(dataframe)){
+    row = as.numeric(dataframe[row_index,])
+    RSD = sd(row) / mean(row)
+    RSD_tests[row_index] = RSD <= 1 || is.na(RSD)
+  }
+  dataframe$RSD.test <- as.factor(RSD_tests)
+  levels(dataframe$RSD.test) <- c(FALSE, TRUE)
+  return(dataframe)
+}
+#Applying RSD.test() to gene counts
+counts_standard.df  <- RSD.test(counts)
+#Creating list of genes which failed RSD test
+RSD_failed_genes <- rownames(counts_standard.df[
+  which(counts_standard.df$RSD.test == FALSE),])
+# Filtering gene counts
+filtered_counts <- counts[
+  which(!rownames(counts) %in% RSD_failed_genes),]
+
+
+#Sample grouping
+group=c(rep('CT',11),rep('Wild',9))
+group=factor(group)
+group <- relevel(group, ref="Wild")
+
+
+#constructing DGElist 
+DGElist <- DGEList(counts = filtered_counts,group = group)
+
+
+#Filtering lowly expressed genes
+counts.keep <- filterByExpr(DGElist)
+summary(counts.keep)
+DGEList <- DGElist[counts.keep, , keep.lib.sizes = FALSE]
+dim(DGElist)
+
+
+#Normalising samples
+DGElist$samples$norm.factors
+DGElist <- calcNormFactors(DGElist)
+dim(DGElist)
+
+
+#plotting MDS and saving as pdf file
+pdf(file = "MDS plot.pdf", width = 12, height = 12);
+plotMDS(DGElist,main="MDS plot", labels=colnames(DGElist$counts))
+dev.off()
+
+
+#Estimating dispersion
+DGElist <- estimateDisp(DGElist,model.matrix(~group))
+pdf(file = "BCV plot.pdf", width = 12, height = 12);
+plotBCV(DGElist, main="BCV plot", xlab="logCPM", 
+        ylab="Biological coefficient of variation", pch=21, cex=0.5)
+dev.off()
+
+
+#Differential gene expression analysis
+fit <- glmFit(DGElist,model.matrix(~group))
+lrt <- glmLRT(fit,coef=2)
+topTags(lrt)
+results <- as.data.frame(topTags(lrt,n = nrow(DGElist$counts)))
+write.table(results, 'edgeR results.txt', sep = '\t', col.names = NA, quote = FALSE)
+#All significant DEGs and saving
+sign_genes <-subset(results, FDR < 0.05 & (logFC > 1 | logFC < -1))
+write.table(sign_genes,file = "Significant DEGs.txt",col.names = NA,sep = "\t") 
+#Significant upregualted DEGs and saving
+up_DEGs <- subset(results, FDR < 0.05 & logFC > 1)
+write.table(up_DEGs, "up_DEGs_genes.txt",col.names = NA,sep = "\t")
+#Significant downregualted DEGs and saving
+down_DEGs <- subset(results, FDR < 0.05 & logFC < -1)
+write.table(down_DEGs, "down_DEGs_genes.txt",col.names = NA,sep = "\t")
+
+#Plotting volcano plot and top10 up- or down- regulated genes were marked
+BiocManager::install('EnhancedVolcano')
+library(EnhancedVolcano)
+#Defining top10 up and down genes
+up.top <- rownames(up_DEGs[order(up_DEGs$FDR,-up_DEGs$logFC),])[1:10]
+down.top <- rownames(down_DEGs[order(down_DEGs$FDR,down_DEGs$logFC),])[1:10]
+top_genes <- c(up.top,down.top)
+#Setting the color
+keyvals <- ifelse(
+  results$logFC < -1 & results$FDR<0.05 , 'royalblue',
+  ifelse(results$logFC > 1 & results$FDR<0.05, 'red', 'grey'))
+keyvals[is.na(keyvals)] <- 'grey'
+names(keyvals)[keyvals == 'grey'] <- 'NS'
+names(keyvals)[keyvals == 'royalblue'] <- 'Down'
+names(keyvals)[keyvals == 'red'] <- 'Up'
+#Plotting and saving
+pdf(file = "Volcano plot.pdf", width = 12, height = 12)
+EnhancedVolcano(results,
+                lab = rownames(results),
+                x = 'logFC',
+                y = 'FDR',
+                selectLab = top_genes,
+                xlab = bquote(~Log[2]~ 'fold change'),
+                ylab = bquote('-' ~Log[10] ~ 'FDR'),
+                title = '',
+                subtitle = '',
+                pCutoff = 0.05,
+                FCcutoff = 1.0,
+                pointSize = c(ifelse(rownames(results) %in% top_genes, 4, 1)),
+                labSize = 3,
+                labCol = 'black',
+                boxedLabels = TRUE,
+                colCustom = keyvals,
+                colAlpha = 3/5,
+                legendLabSize = 15,
+                legendIconSize = 5.0,
+                drawConnectors = TRUE,
+                widthConnectors = 1.0,
+                colConnectors = 'black',
+                arrowheads = FALSE,
+                gridlines.major = TRUE,
+                gridlines.minor = FALSE,
+                border = 'full',
+                borderWidth = 0.7,
+                borderColour = 'black',
+                caption = '' )
+dev.off()
